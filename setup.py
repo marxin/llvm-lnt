@@ -125,7 +125,7 @@ http://llvm.org/svn/llvm-project/lnt/trunk
         "Werkzeug==0.12.2",
         "itsdangerous==0.24",
         "python-dateutil==2.6.0",
-        "python-gnupg==0.3.7",
+        "python-gnupg==0.4.4",
         "pytz==2016.10",
         "WTForms==2.0.2",
         "Flask-WTF==0.12",
