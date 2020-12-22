@@ -2,6 +2,7 @@ from lnt.server.reporting.analysis import REGRESSED, UNCHANGED_FAIL
 from lnt.server.reporting.report import RunResult, RunResults, report_css_styles, is_user_machine_name
 import lnt.server.reporting.analysis
 import lnt.server.ui.app
+import sqlalchemy
 from sqlalchemy import or_
 import timeago
 
