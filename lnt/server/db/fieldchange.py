@@ -17,13 +17,14 @@ from lnt.server.db.testsuitedb import TestSuiteDB
 # More runs are slower (more DB access), but may provide
 # more accurate results.
 
-FIELD_CHANGE_LOOKBACK = 10
+FIELD_CHANGE_LOOKBACK = 5
 
 
 def post_submit_tasks(session, ts, run_id):
     """Run the field change related post submission tasks.
 
     """
+    return
     regenerate_fieldchanges_for_run(session, ts, run_id)
 
 

@@ -1,15 +1,63 @@
 from lnt.server.reporting.analysis import REGRESSED, UNCHANGED_FAIL
-from lnt.server.reporting.report import RunResult, RunResults, report_css_styles
+from lnt.server.reporting.report import RunResult, RunResults, report_css_styles, is_user_machine_name
 import lnt.server.reporting.analysis
 import lnt.server.ui.app
+from sqlalchemy import or_
+import timeago
 
+from itertools import groupby
+
+from datetime import *
+from dateutil.relativedelta import relativedelta
+from lnt.server.reporting.analysis import *
+from lnt.server.reporting.report import *
+
+class MiniResult:
+    def __init__(self, value, difference, hash, bigger_is_better):
+        self.value = value
+        self.delta = difference
+        self.abs_delta = abs(difference)
+        self.hash_rgb_color = hash
+        self.hash = hash
+        self.bigger_is_better = bigger_is_better
+
+    def get_value_status(self, min_percentage_change):
+        return IMPROVED if self.abs_delta >= min_percentage_change else UNCHANGED_PASS
+
+class MiniComparisonResult:
+    def __init__(self, values, hashes, bigger_is_better, all_changes):
+        self.values = []
+        self.min_sample = min(values)
+        self.max_sample = max(values)
+        self.all_changes = all_changes
+
+        b = values[0]
+        rgb_colors = get_rgb_colors_for_hashes(hashes)
+        for i in range(len(values)):
+            self.values.append(MiniResult(values[i], values[i] / b - 1, rgb_colors[i], bigger_is_better))
+
+    def is_interesting(self, min_percentage_change):
+        return any(map(lambda x: x.abs_delta > min_percentage_change, self.get_interesting_values()))
+
+    def get_absolute_difference(self):
+        return max([x.abs_delta for x in self.get_interesting_values()])
+
+    def get_interesting_values(self):
+        return self.values if self.all_changes else [self.values[-1]]
 
 class LatestRunsReport(object):
-    def __init__(self, ts, run_count):
+    def __init__(self, ts, younger_in_days, older_in_days, all_changes, all_elf_detail_stats,
+            revisions, min_percentage_change, include_user_branches):
         self.ts = ts
-        self.run_count = run_count
+        self.younger_in_days = younger_in_days
+        self.older_in_days = older_in_days
+        self.all_changes = all_changes
+        self.all_elf_detail_stats = all_elf_detail_stats
+        self.revisions = revisions
+        self.min_percentage_change = min_percentage_change
         self.hash_of_binary_field = self.ts.Sample.get_hash_of_binary_field()
         self.fields = list(ts.Sample.get_metric_fields())
+        self.include_user_branches = include_user_branches
 
         # Computed values.
         self.result_table = None
@@ -17,95 +65,73 @@ class LatestRunsReport(object):
     def build(self, session):
         ts = self.ts
 
+        tests = session.query(ts.Test).all();
         machines = session.query(ts.Machine).all()
+        runs = session.query(ts.Run).all()
+
+        younger_than = datetime.now() - relativedelta(days = self.younger_in_days)
+        older_than = datetime.now() - relativedelta(days = self.older_in_days)
+        q = session.query(ts.Sample) \
+            .join(ts.Run) \
+            .join(ts.Test) \
+            .order_by(ts.Run.machine_id, ts.Test.id, ts.Run.start_time)
+
+        if not self.all_elf_detail_stats:
+            q = q.filter(sqlalchemy.not_(ts.Test.name.contains('elf/')))
+
+        filtered_revisions = [r.strip() for r in self.revisions.split(',') if r]
+
+        if len(filtered_revisions) > 0:
+            revisions_filters = [ts.Order.llvm_project_revision.contains(x) for x in filtered_revisions]
+            q = q.join(ts.Order).filter(ts.Run.order_id == ts.Order.id)
+            q = q.filter(or_(*revisions_filters))
+        else:
+            q = q.filter(ts.Sample.run_id == ts.Run.id) \
+            .filter(ts.Sample.test_id == ts.Test.id) \
+            .filter(ts.Run.start_time >= younger_than) \
+            .filter(ts.Run.start_time <= older_than)
+
+        samples = q.all()
 
         self.result_table = []
         for field in self.fields:
             field_results = []
-            for machine in machines:
-                machine_results = []
-                machine_runs = list(reversed(session.query(ts.Run)
-                    .filter(ts.Run.machine_id == machine.id)
-                    .order_by(ts.Run.start_time.desc())
-                    .limit(self.run_count)
-                    .all()))
 
-                if len(machine_runs) < 2:
+            for machine, g in groupby(samples, lambda x: x.run.machine):
+                machine_results = []
+                machine_samples = list(g)
+                revisions = None
+
+                if not 'trunk' in machine.name:
                     continue
 
-                machine_runs_ids = [r.id for r in machine_runs]
+                if not self.include_user_branches and is_user_machine_name(machine.name):
+                    continue
 
-                # take all tests from latest run and do a comparison
-                oldest_run = machine_runs[0]
+                for test, g in groupby(machine_samples, lambda x: x.test):
+                    test_samples = list(g)
 
-                run_tests = session.query(ts.Test) \
-                        .join(ts.Sample) \
-                        .join(ts.Run) \
-                        .filter(ts.Sample.run_id == oldest_run.id) \
-                        .filter(ts.Sample.test_id == ts.Test.id) \
-                        .all()
+                    if len(filtered_revisions) > 0:
+                        test_samples = [next((t for t in test_samples if r in t.run.order.llvm_project_revision), None) for r in filtered_revisions]
+                        machine_runs = [t for t in test_samples if t]
 
-                # Create a run info object.
-                sri = lnt.server.reporting.analysis.RunInfo(session, ts, machine_runs_ids)
-
-                # Build the result table of tests with interesting results.
-                def compute_visible_results_priority(visible_results):
-                    # We just use an ad hoc priority that favors showing tests with
-                    # failures and large changes. We do this by computing the priority
-                    # as tuple of whether or not there are any failures, and then sum
-                    # of the mean percentage changes.
-                    test, results = visible_results
-                    had_failures = False
-                    sum_abs_deltas = 0.
-                    for result in results:
-                        test_status = result.cr.get_test_status()
-
-                        if (test_status == REGRESSED or test_status == UNCHANGED_FAIL):
-                            had_failures = True
-                        elif result.cr.pct_delta is not None:
-                            sum_abs_deltas += abs(result.cr.pct_delta)
-                    return (field.name, -int(had_failures), -sum_abs_deltas, test.name)
-
-                for test in run_tests:
-                    cr = sri.get_comparison_result(
-                            [machine_runs[-1]], [oldest_run], test.id, field,
-                            self.hash_of_binary_field)
-
-                    # If the result is not "interesting", ignore it.
-                    if not cr.is_result_interesting():
+                    test_samples = [ts for ts in test_samples if ts]
+                    if len(test_samples) < 2:
                         continue
 
-                    # For all previous runs, analyze comparison results
-                    test_results = RunResults()
+                    values = [x.get_field(field) for x in test_samples]
+                    if any(map(lambda x: x == None, values)):
+                        continue
 
-                    for run in reversed(machine_runs):
-                        cr = sri.get_comparison_result(
-                                [run], [oldest_run], test.id, field,
-                                self.hash_of_binary_field)
-                        test_results.append(RunResult(cr))
+                    cr = MiniComparisonResult(values, [x.get_field(self.hash_of_binary_field) for x in test_samples],
+                            field.bigger_is_better, self.all_changes)
+                    if cr.is_interesting(self.min_percentage_change):
+                        machine_results.append((test, cr))
+                    revisions = list(reversed([s.run.order.llvm_project_revision for s in test_samples]))
+                    agos = list(reversed([timeago.format(s.run.start_time, datetime.now()).replace(' ago', '') for s in test_samples]))
 
-                    test_results.complete()
-
-                    machine_results.append((test, test_results))
-
-                machine_results.sort(key=compute_visible_results_priority)
-
-                # If there are visible results for this test, append it to the
-                # view.
-                if machine_results:
-                    field_results.append((machine, len(machine_runs), machine_results))
-
-            field_results.sort(key=lambda x: x[0].name)
+                if len(machine_results) > 0:
+                    machine_results.sort(key = lambda x: x[1].get_absolute_difference(), reverse = True)
+                    field_results.append((machine, zip(revisions, agos), machine_results))
+            field_results.sort(key = lambda x: x[0].name)
             self.result_table.append((field, field_results))
-
-    def render(self, ts_url, only_html_body=True):
-        # Strip any trailing slash on the testsuite URL.
-        if ts_url.endswith('/'):
-            ts_url = ts_url[:-1]
-
-        env = lnt.server.ui.app.create_jinja_environment()
-        template = env.get_template('reporting/latest_runs_report.html')
-
-        return template.render(
-            report=self, styles=report_css_styles, analysis=lnt.server.reporting.analysis,
-            ts_url=ts_url, only_html_body=only_html_body)

@@ -1,10 +1,202 @@
-{% set db = request.get_db() %}
+{% set nosidebar = True %}
+{% import "utils.html" as utils %}
+{% import "local.html" as local %}
+
+{% macro get_initial_cell_value(result, field, analysis) %}
+  <td class="tr reference" style="background-color:#d2d2d2"> {#- -#}
+    {{ result.value|print_value(field.unit, field.unit_abbrev) }}
+  </td>
+{% endmacro %}
+
+{% macro get_cell_value(result, analysis, min_percentage_change = None) %}
+{%- set value_status = result.get_value_status(min_percentage_change = min_percentage_change) -%}
+{%- if (value_status == analysis.REGRESSED or
+       value_status == analysis.IMPROVED) %}
+       {{ result.delta|aspctcell(reverse=result.bigger_is_better, class_ = "value tr")|safe }}
+{%- else %}
+    <td class="value tc" style="background-color: #e8e8e8">~</td>
+{%- endif -%}
+{% endmacro %}
+
+
+{% macro spark_plot(results) %}
+{%- set x_border_size = 5 %}
+{%- set x_border_size = 5 %}
+{%- set y_border_size = 2 %}
+{%- set height = 18 %}
+{%- set full_height = height + 2*y_border_size %}
+{%- set x_day_spacing = 10 %}
+{%- set nr_days = results.values|length %}
+{%- set width = x_day_spacing * nr_days + 2*x_border_size %}
+{%- if results.max_sample != results.min_sample %}
+  {%- set scaling_factor = (1.0*height)
+         / (results.max_sample-results.min_sample) -%}
+{%- else %}
+  {%- set scaling_factor = 1.0 -%}
+{%- endif %}
+{%- macro spark_y_coord(day_nr, value) -%}
+  {{ (value-results.min_sample) * scaling_factor + y_border_size }}
+{%- endmacro -%}
+{%- macro spark_x_coord(day_nr) -%}
+  {{ (nr_days - day_nr) * x_day_spacing + x_border_size }}
+{%- endmacro -%}
+{%- macro spark_hash_background(day_nr, dr) -%}
+  {%- if dr.hash is not none -%}
+    {%- set style = "fill: " + dr.hash_rgb_color + ";" -%}
+  {%- else -%}
+    {%- set style = "fill: none;" -%}
+  {%- endif -%}
+    <rect x="{{(nr_days-day_nr-0.5) * x_day_spacing + x_border_size}}" y="0"
+          width="{{x_day_spacing}}" height="{{full_height}}" style="{{style}}"/>
+{%- endmacro -%}
+    <span>
+      <svg width="{{width}}" height="{{full_height}}">
+      <rect width="{{width}}" height="{{full_height}}" fill="#f7f7f7"/>
+{#- Make y-axis go upwards instead of downwards: #}
+      <g transform="translate(0, {{full_height}}) scale(1, -1) ">
+{%- for dr in results.values|reverse -%}
+  {%- if dr is not none -%}
+    {%- set day_nr = loop.index %}
+      {{ spark_hash_background(day_nr, dr) }}
+      {# fuzz the x-coordinate slightly so that multiple samples with the same
+         value can be noticed #}
+        <circle cx="{{ spark_x_coord(day_nr)|float }}" {# -#}
+                cy="{{ spark_y_coord(day_nr, dr.value) }}" r="1"
+                stroke-width="1" stroke="black" fill="black" />
+  {%- endif -%}
+{%- endfor %}
+        <polyline points="
+  {%- for dr in results.values|reverse -%}
+      {%- set day_nr = loop.index -%}
+      {%- if dr.value is not none %}
+          {{ spark_x_coord(day_nr) }} {{ spark_y_coord(day_nr, dr.value) }}
+      {%- endif -%}
+  {%- endfor -%}
+          " fill="none" stroke="red" stroke-width="1"/>
+        </g>
+      </svg>
+    </span>
+{%- endmacro %}
+
 
 {% extends "layout.html" %}
-{% set components = [(ts.name, v4_url_for(".v4_recent_activity"))] %}
+{% set components = [(ts.name, v4_url_for(".v4_latest_runs_report"))] %}
+
 {% block title %}Latest Runs Report{% endblock %}
+
+{% block head %}
+<link href="/static/reports.css" rel="stylesheet"/>
+{% endblock %}
+
 {% block body %}
+<div id="latest-run-report">
+<h2 style="text-align:center">Latest Runs Report</h2>
 
-{{ report.render(v4_url_for('.v4_overview'))|safe }}
+<div class="row">
+  <div class="span7">
+    <h5>Server query filter</h5>
+    <form class="form-horizontal" method="GET">
+        <div class="control-group">
+            <label class="control-label" for="younger_in_days">Younger than N days:</label>
+            <div class="controls">
+                <input type="number" name="younger_in_days" value="{{ report.younger_in_days}}">
+            </div>
+        </div>
+        <div class="control-group">
+            <label class="control-label">Older than N days:</label>
+            <div class="controls">
+                <input type="number" name="older_in_days" value="{{ report.older_in_days}}">
+            </div>
+        </div>
+        <div class="control-group">
+            <label class="control-label" for="all_changes">Display all changes:</label>
+            <div class="controls">
+                <input type="checkbox" name="all_changes" id="all_changes" {% if report.all_changes %}checked{% endif %} />
+            </div>
+        </div>
+        <div class="control-group">
+            <label class="control-label" for="all_elf_detail_stats">Display all ELF stats:</label>
+            <div class="controls">
+                <input type="checkbox" name="all_elf_detail_stats" id="all_elf_detail_stats" {% if report.all_elf_detail_stats %}checked{% endif %} />
+            </div>
+        </div>
+        <div class="control-group">
+            <label class="control-label">Minimum threshold:</label>
+            <div class="controls">
+                <input type="number" min="0.001" step="any" name="min_percentage_change" value="{{ report.min_percentage_change }}">
+            </div>
+        </div>
+        <div class="control-group">
+            <label class="control-label">GIT revisions:</label>
+            <div class="controls">
+                <input type="text" name="revisions" value="{{ report.revisions }}">
+            </div>
+        </div>
+        <div class="control-group">
+            <label class="control-label" for="include_user_branches">Include user branches:</label>
+            <div class="controls">
+                <input type="checkbox" name="include_user_branches" id="include_user_branches" {% if report.include_user_branches %}checked{% endif %} />
+            </div>
+        </div>
+        <div class="control-group">
+            <div class="controls">
+                <input type="submit" value="Generate">
+            </div>
+        </div>
+    </form>
+  </div>
+  <div class="span5">
+    <h5>Result filter</h5>
+{{ utils.regex_filter_box(input_id='machine-filter',
+                          selector='.searchable-machine',
+                          placeholder="Machine name regex...",
+                          selector_part_to_search=".machine-name")
+}}
+{{ utils.regex_filter_box(input_id='test-filter',
+                          selector='.searchable',
+                          placeholder="Test name regex...",
+                          selector_part_to_search=".test-name")
+}}
+  </div>
+</div>
 
+{% for field, field_results in report.result_table %}
+    {%- if field_results -%}
+        {{ utils.render_popup_begin(field.display_name, field.display_name, false, element = 'h4') }}
+        {% for machine, machine_run_orders, machine_results in field_results %}
+            <div class="searchable-machine">
+                <h5 class="machine-name">{{machine.name}}</h5>
+                <table border="1">
+                    <thead>
+                        <tr>
+                            <th>Test</th>
+                            {% for v in machine_run_orders|reverse %}
+                            <th>{{ local.render_git_link(v[0], v[1]) }}</th>
+                            {% endfor %}
+                            <th>Sparkline</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for test, test_results in machine_results %}
+                            <tr class="searchable">
+                                <td class="test-name"><a href="{{
+                  ts_url}}/graph?plot.0={{machine.id}}.{{test.id}}.{{
+                    report.ts.get_field_index(field)}}">{{test.name}}</a></td>
+                                {{ get_initial_cell_value(test_results.values[0], field, analysis) }}
+                                {% for result in test_results.values[1:] %}
+                                    {{ get_cell_value(result, analysis, report.min_percentage_change) }}
+                                {% endfor %}
+                                <td>{{ spark_plot(test_results) }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% endfor %}
+        {{ utils.render_popup_end() }}
+    {% else %}
+        <h4>No significant {{ field.display_name }} changes found.</h4>
+    {%- endif -%}
+{% endfor %}
+</div>
 {% endblock %}

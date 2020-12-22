@@ -14,7 +14,7 @@ def pairs(l):
 
 # The hash color palette avoids green and red as these colours are already used
 # in quite a few places to indicate "good" or "bad".
-_hash_color_palette = (
+_hash_color_palette = 5 * (
     colorsys.hsv_to_rgb(h=45. / 360, s=0.3, v=0.9999),  # warm yellow
     colorsys.hsv_to_rgb(h=210. / 360, s=0.3, v=0.9999),  # blue cyan
     colorsys.hsv_to_rgb(h=300. / 360, s=0.3, v=0.9999),  # mid magenta
@@ -54,6 +54,9 @@ def _get_rgb_colors_for_hashes(hash_strings):
             rgb = hash2color.get(hash_string, (0.999, 0.999, 0.999))
             result.append(_toColorString(rgb))
     return result
+
+def get_rgb_colors_for_hashes(hash_strings):
+    return _get_rgb_colors_for_hashes(hash_strings)
 
 # Helper classes to make the sparkline chart construction easier in the jinja
 # template.
@@ -130,3 +133,6 @@ report_css_styles = {
         "td": "padding:5px; padding-left:8px",
         "right": "text-align: right;"
         }
+
+def is_user_machine_name(name):
+    return 'honza' in name or 'marxin' in name

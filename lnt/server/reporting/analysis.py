@@ -32,6 +32,8 @@ def absmin_diff(current, prevs):
             smallest_pos = i
     return current-prevs[smallest_pos], prevs[smallest_pos]
 
+# Minimal percentage difference that is visible in reports
+MIN_PERCENTAGE_CHANGE = .02
 
 def calc_geomean(run_values):
     # NOTE Geometric mean applied only to positive values, so fix it by
@@ -131,14 +133,14 @@ class ComparisonResult:
             return True
         return False
 
-    def is_result_interesting(self):
+    def is_result_interesting(self, min_percentage_change = None):
         """is_result_interesting() -> bool
 
         Check whether the result is worth displaying, either because of a
         failure, a test status change or a performance change."""
         if self.get_test_status() != UNCHANGED_PASS:
             return True
-        if self.get_value_status() in (REGRESSED, IMPROVED):
+        if self.get_value_status(min_percentage_change = min_percentage_change) in (REGRESSED, IMPROVED):
             return True
         return False
 
@@ -160,7 +162,11 @@ class ComparisonResult:
     # significant - for execution time. It can be significant for compile time.
     def get_value_status(self, confidence_interval=2.576,
                          value_precision=MIN_VALUE_PRECISION,
-                         ignore_small=True):
+                         ignore_small=True,
+                         min_percentage_change=None):
+        if min_percentage_change == None:
+            min_percentage_change = MIN_PERCENTAGE_CHANGE
+
         if self.current is None or self.previous is None:
             return None
 
@@ -178,14 +184,14 @@ class ComparisonResult:
 
         # Always ignore percentage changes below MIN_PERCENTAGE_CHANGE %, for now, we just don't
         # have enough time to investigate that level of stuff.
-        if ignore_small and abs(self.pct_delta) < MIN_PERCENTAGE_CHANGE:
+        if ignore_small and abs(self.pct_delta) < min_percentage_change:
             return UNCHANGED_PASS
 
         # Always ignore changes with small deltas. There is no mathematical
         # basis for this, it should be obviated by appropriate statistical
         # checks, but practical evidence indicates what we currently have isn't
         # good enough (for reasons I do not yet understand).
-        if ignore_small and abs(self.delta) < MIN_PERCENTAGE_CHANGE:
+        if ignore_small and abs(self.delta) < min_percentage_change:
             return UNCHANGED_PASS
 
         # Ignore tests whose delta is too small relative to the precision we
